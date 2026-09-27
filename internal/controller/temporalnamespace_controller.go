@@ -20,7 +20,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"reflect"
+	"sync"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -53,12 +56,24 @@ import (
 )
 
 const (
-	temporalNamespaceRefIndex = "temporal.nori-cloud.io/temporal-namespace-ref"
-	workersRecheckInterval    = 5 * time.Second
-	defaultRetentionDays      = int32(7)
-	minRetentionDays          = int32(7)
-	maxRetentionDays          = int32(30)
+	temporalNamespaceRefIndex       = "temporal.nori-cloud.io/temporal-namespace-ref"
+	workersRecheckInterval          = 5 * time.Second
+	temporalRetryBaseDelay          = time.Second
+	temporalRetryMaxDelay           = 30 * time.Second
+	temporalUnavailableRecheck      = time.Minute
+	temporalMaxRetries              = 5
+	temporalNamespaceManagedByKey   = "temporal.nori-cloud.io/managed-by"
+	temporalNamespaceManagedByValue = "temporal-platform-operator"
+	temporalNamespaceOwnerUIDKey    = "temporal.nori-cloud.io/owner-uid"
+	defaultRetentionDays            = int32(7)
+	minRetentionDays                = int32(7)
+	maxRetentionDays                = int32(30)
 )
+
+type temporalRetryState struct {
+	generation int64
+	retries    int
+}
 
 // TemporalNamespaceReconciler reconciles a TemporalNamespace object.
 type TemporalNamespaceReconciler struct {
@@ -69,6 +84,9 @@ type TemporalNamespaceReconciler struct {
 	// TEMPORAL_FRONTEND_ADDRESS by the manager startup code.
 	TemporalClient temporalclient.Client
 	Recorder       record.EventRecorder
+
+	retryMu     sync.Mutex
+	retryStates map[types.NamespacedName]temporalRetryState
 }
 
 // +kubebuilder:rbac:groups=temporal.nori-cloud.io,resources=temporalnamespaces,verbs=get;list;watch;create;update;patch;delete
@@ -84,6 +102,7 @@ func (r *TemporalNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		}
 		return ctrl.Result{}, err
 	}
+	r.resetTemporalRetryStateForGeneration(resource)
 
 	if !resource.DeletionTimestamp.IsZero() {
 		return r.reconcileDeletion(ctx, resource)
@@ -102,50 +121,66 @@ func (r *TemporalNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		retentionDays = defaultRetentionDays
 	}
 	if retentionDays < minRetentionDays || retentionDays > maxRetentionDays {
-		return r.reconcileError(ctx, resource, fmt.Errorf("retentionDays must be between %d and %d (got %d)", minRetentionDays, maxRetentionDays, retentionDays))
+		return r.reconcilePermanentError(ctx, resource, fmt.Errorf("retentionDays must be between %d and %d (got %d)", minRetentionDays, maxRetentionDays, retentionDays))
 	}
 	if r.TemporalClient == nil {
-		return r.reconcileError(ctx, resource, errors.New("Temporal client is not configured"))
+		return r.reconcilePermanentError(ctx, resource, errors.New("Temporal client is not configured"))
 	}
 
 	describe, err := r.TemporalClient.WorkflowService().DescribeNamespace(ctx, &workflowservice.DescribeNamespaceRequest{Namespace: resource.Name})
 	if err != nil {
 		var notFound *serviceerror.NamespaceNotFound
 		if !errors.As(err, &notFound) && goapierrors.Code(err) != codes.NotFound {
-			return r.reconcileError(ctx, resource, fmt.Errorf("describe Temporal namespace %q: %w", resource.Name, err))
+			return r.reconcileTemporalError(ctx, resource, fmt.Errorf("describe Temporal namespace %q: %w", resource.Name, err))
 		}
 
 		_, registerErr := r.TemporalClient.WorkflowService().RegisterNamespace(ctx, &workflowservice.RegisterNamespaceRequest{
 			Namespace:                        resource.Name,
 			WorkflowExecutionRetentionPeriod: durationpb.New(retentionDuration(retentionDays)),
+			Data: map[string]string{
+				temporalNamespaceManagedByKey: temporalNamespaceManagedByValue,
+				temporalNamespaceOwnerUIDKey:  string(resource.UID),
+			},
 		})
 		if registerErr != nil {
 			var alreadyExists *serviceerror.NamespaceAlreadyExists
 			if !errors.As(registerErr, &alreadyExists) && goapierrors.Code(registerErr) != codes.AlreadyExists {
-				return r.reconcileError(ctx, resource, fmt.Errorf("register Temporal namespace %q: %w", resource.Name, registerErr))
+				return r.reconcileTemporalError(ctx, resource, fmt.Errorf("register Temporal namespace %q: %w", resource.Name, registerErr))
 			}
 			// Another reconcile may have registered it. Describe it and continue
 			// through the normal drift/update path.
 			describe, err = r.TemporalClient.WorkflowService().DescribeNamespace(ctx, &workflowservice.DescribeNamespaceRequest{Namespace: resource.Name})
 			if err != nil {
-				return r.reconcileError(ctx, resource, fmt.Errorf("describe Temporal namespace %q after registration race: %w", resource.Name, err))
+				return r.reconcileTemporalError(ctx, resource, fmt.Errorf("describe Temporal namespace %q after registration race: %w", resource.Name, err))
 			}
 		} else {
 			r.emitEvent(resource, corev1.EventTypeNormal, "Sync", "Registered Temporal namespace")
-			return r.setReady(ctx, resource, "Temporal namespace registered")
+			result, readyErr := r.setReady(ctx, resource, "Temporal namespace registered")
+			if readyErr == nil {
+				r.resetTemporalRetryState(resource)
+			}
+			return result, readyErr
 		}
+	}
+
+	if !temporalNamespaceOwnedBy(resource, describe) {
+		return r.reconcileNameAlreadyTaken(ctx, resource)
 	}
 
 	if describe == nil || describe.Config == nil || describe.Config.WorkflowExecutionRetentionTtl == nil ||
 		describe.Config.WorkflowExecutionRetentionTtl.AsDuration() != retentionDuration(retentionDays) {
 		r.emitEvent(resource, corev1.EventTypeNormal, "DriftDetected", fmt.Sprintf("Temporal namespace retention differs from desired %d days", retentionDays))
 		if err := r.updateNamespace(ctx, resource.Name, describe, retentionDays); err != nil {
-			return r.reconcileError(ctx, resource, fmt.Errorf("update Temporal namespace %q: %w", resource.Name, err))
+			return r.reconcileTemporalError(ctx, resource, fmt.Errorf("update Temporal namespace %q: %w", resource.Name, err))
 		}
 		r.emitEvent(resource, corev1.EventTypeNormal, "Sync", "Updated Temporal namespace retention")
 	}
 
-	return r.setReady(ctx, resource, "Temporal namespace is synchronized")
+	result, readyErr := r.setReady(ctx, resource, "Temporal namespace is synchronized")
+	if readyErr == nil {
+		r.resetTemporalRetryState(resource)
+	}
+	return result, readyErr
 }
 
 func (r *TemporalNamespaceReconciler) updateNamespace(ctx context.Context, name string, described *workflowservice.DescribeNamespaceResponse, retentionDays int32) error {
@@ -205,13 +240,14 @@ func (r *TemporalNamespaceReconciler) reconcileDeletion(ctx context.Context, res
 		return ctrl.Result{RequeueAfter: workersRecheckInterval}, nil
 	}
 	if r.TemporalClient == nil {
-		return r.reconcileError(ctx, resource, errors.New("Temporal client is not configured"))
+		return r.reconcilePermanentError(ctx, resource, errors.New("Temporal client is not configured"))
 	}
 
 	_, err = r.TemporalClient.OperatorService().DeleteNamespace(ctx, &operatorservice.DeleteNamespaceRequest{Namespace: resource.Name})
 	if err != nil && !isTemporalNotFound(err) {
-		return r.reconcileError(ctx, resource, fmt.Errorf("delete Temporal namespace %q: %w", resource.Name, err))
+		return r.reconcileTemporalError(ctx, resource, fmt.Errorf("delete Temporal namespace %q: %w", resource.Name, err))
 	}
+	r.resetTemporalRetryState(resource)
 	r.emitEvent(resource, corev1.EventTypeNormal, "Sync", "Deleted Temporal namespace")
 	controllerutil.RemoveFinalizer(resource, temporalFinalizer)
 	if err := r.Update(ctx, resource); err != nil {
@@ -232,6 +268,121 @@ func (r *TemporalNamespaceReconciler) reconcileError(ctx context.Context, resour
 		return ctrl.Result{}, statusErr
 	}
 	return ctrl.Result{}, err
+}
+
+func (r *TemporalNamespaceReconciler) reconcilePermanentError(ctx context.Context, resource *temporalv1alpha1.TemporalNamespace, err error) (ctrl.Result, error) {
+	r.emitEvent(resource, corev1.EventTypeWarning, "Error", err.Error())
+	if statusErr := r.setCondition(ctx, resource, metav1.ConditionFalse, "ReconciliationError", err.Error()); statusErr != nil {
+		return ctrl.Result{}, statusErr
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *TemporalNamespaceReconciler) reconcileNameAlreadyTaken(ctx context.Context, resource *temporalv1alpha1.TemporalNamespace) (ctrl.Result, error) {
+	message := fmt.Sprintf("Temporal namespace %q exists but is not owned by this TemporalNamespace", resource.Name)
+	r.emitEvent(resource, corev1.EventTypeWarning, "NameAlreadyTaken", message)
+	if err := r.setCondition(ctx, resource, metav1.ConditionFalse, "NameAlreadyTaken", message); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *TemporalNamespaceReconciler) reconcileTemporalError(ctx context.Context, resource *temporalv1alpha1.TemporalNamespace, err error) (ctrl.Result, error) {
+	if !isRetryableTemporalError(err) {
+		return r.reconcilePermanentError(ctx, resource, err)
+	}
+	key := types.NamespacedName{Namespace: resource.Namespace, Name: resource.Name}
+	retries := r.recordTemporalRetry(key, resource.Generation)
+	if retries <= temporalMaxRetries {
+		message := fmt.Sprintf("transient Temporal API error (retry %d/%d): %s", retries, temporalMaxRetries, err)
+		r.emitEvent(resource, corev1.EventTypeWarning, "Error", message)
+		return ctrl.Result{RequeueAfter: temporalRetryDelay(retries)}, nil
+	}
+
+	message := fmt.Sprintf("Temporal API unavailable after initial attempt and %d retries: %s", temporalMaxRetries, err)
+	r.emitEvent(resource, corev1.EventTypeWarning, "Error", message)
+	if statusErr := r.setCondition(ctx, resource, metav1.ConditionFalse, "TemporalUnavailable", message); statusErr != nil {
+		return ctrl.Result{}, statusErr
+	}
+	return ctrl.Result{RequeueAfter: temporalUnavailableRecheck}, nil
+}
+
+func (r *TemporalNamespaceReconciler) recordTemporalRetry(key types.NamespacedName, generation int64) int {
+	r.retryMu.Lock()
+	defer r.retryMu.Unlock()
+	if r.retryStates == nil {
+		r.retryStates = make(map[types.NamespacedName]temporalRetryState)
+	}
+	state := r.retryStates[key]
+	if state.generation != generation {
+		state = temporalRetryState{generation: generation}
+	}
+	state.retries++
+	r.retryStates[key] = state
+	return state.retries
+}
+
+func (r *TemporalNamespaceReconciler) resetTemporalRetryState(resource *temporalv1alpha1.TemporalNamespace) {
+	key := types.NamespacedName{Namespace: resource.Namespace, Name: resource.Name}
+	r.retryMu.Lock()
+	defer r.retryMu.Unlock()
+	delete(r.retryStates, key)
+}
+
+func (r *TemporalNamespaceReconciler) resetTemporalRetryStateForGeneration(resource *temporalv1alpha1.TemporalNamespace) {
+	key := types.NamespacedName{Namespace: resource.Namespace, Name: resource.Name}
+	r.retryMu.Lock()
+	defer r.retryMu.Unlock()
+	if state, ok := r.retryStates[key]; ok && state.generation != resource.Generation {
+		delete(r.retryStates, key)
+	}
+}
+
+func temporalRetryDelay(retry int) time.Duration {
+	delay := temporalRetryBaseDelay
+	for i := 1; i < retry; i++ {
+		if delay >= temporalRetryMaxDelay/2 {
+			return temporalRetryMaxDelay
+		}
+		delay *= 2
+	}
+	if delay > temporalRetryMaxDelay {
+		return temporalRetryMaxDelay
+	}
+	return delay
+}
+
+func temporalNamespaceOwnedBy(resource *temporalv1alpha1.TemporalNamespace, described *workflowservice.DescribeNamespaceResponse) bool {
+	if described == nil || described.NamespaceInfo == nil {
+		return false
+	}
+	data := described.NamespaceInfo.Data
+	return data[temporalNamespaceManagedByKey] == temporalNamespaceManagedByValue &&
+		data[temporalNamespaceOwnerUIDKey] == string(resource.UID)
+}
+
+func isRetryableTemporalError(err error) bool {
+	var networkErr net.Error
+	if errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var temporalErr serviceerror.ServiceError
+	if errors.As(err, &temporalErr) && temporalErr.Status() != nil {
+		return isRetryableTemporalCode(temporalErr.Status().Code())
+	}
+	return isRetryableTemporalCode(goapierrors.Code(err))
+}
+
+func isRetryableTemporalCode(code codes.Code) bool {
+	switch code {
+	case codes.Unavailable, codes.DeadlineExceeded, codes.ResourceExhausted, codes.Aborted, codes.Internal:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *TemporalNamespaceReconciler) setReady(ctx context.Context, resource *temporalv1alpha1.TemporalNamespace, message string) (ctrl.Result, error) {

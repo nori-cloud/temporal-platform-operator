@@ -104,6 +104,16 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForTemporalNamespace", "referenced TemporalNamespace is not Ready")
 	}
 
+	beforeOwnerReferences := append([]metav1.OwnerReference(nil), resource.OwnerReferences...)
+	if err := controllerutil.SetControllerReference(temporalNamespace, resource, r.Scheme); err != nil {
+		return ctrl.Result{}, err
+	}
+	if !reflect.DeepEqual(beforeOwnerReferences, resource.OwnerReferences) {
+		if err := r.Update(ctx, resource); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
 	temporalProxy := &temporalv1alpha1.TemporalProxy{}
 	proxyKey := client.ObjectKey{Namespace: resource.Namespace, Name: temporalNamespace.Spec.ProxyRef.Name}
 	if err := r.Get(ctx, proxyKey, temporalProxy); err != nil {
