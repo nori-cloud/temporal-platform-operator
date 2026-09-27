@@ -98,7 +98,7 @@ func main() {
 		setupLog.Error(fmt.Errorf("TEMPORAL_FRONTEND_ADDRESS is required"), "Failed to configure Temporal client")
 		os.Exit(1)
 	}
-	temporalClient, err := temporalclient.NewClient(temporalclient.Options{HostPort: frontendAddress})
+	temporalClient, err := temporalclient.NewLazyClient(temporalclient.Options{HostPort: frontendAddress})
 	if err != nil {
 		setupLog.Error(err, "Failed to create Temporal client", "address", frontendAddress)
 		os.Exit(1)
@@ -200,7 +200,8 @@ func main() {
 		Client:         mgr.GetClient(),
 		Scheme:         mgr.GetScheme(),
 		TemporalClient: temporalClient,
-		Recorder:       mgr.GetEventRecorderFor("temporalnamespace"),
+		//nolint:staticcheck // controller-runtime's new event API is not yet compatible with this recorder field.
+		Recorder: mgr.GetEventRecorderFor("temporalnamespace"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "temporalnamespace")
 		os.Exit(1)

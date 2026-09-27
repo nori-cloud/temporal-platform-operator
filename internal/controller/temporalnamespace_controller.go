@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"reflect"
 	"sync"
@@ -124,7 +125,7 @@ func (r *TemporalNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		return r.reconcilePermanentError(ctx, resource, fmt.Errorf("retentionDays must be between %d and %d (got %d)", minRetentionDays, maxRetentionDays, retentionDays))
 	}
 	if r.TemporalClient == nil {
-		return r.reconcilePermanentError(ctx, resource, errors.New("Temporal client is not configured"))
+		return r.reconcilePermanentError(ctx, resource, errors.New("temporal client is not configured"))
 	}
 
 	describe, err := r.TemporalClient.WorkflowService().DescribeNamespace(ctx, &workflowservice.DescribeNamespaceRequest{Namespace: resource.Name})
@@ -155,11 +156,11 @@ func (r *TemporalNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 			}
 		} else {
 			r.emitEvent(resource, corev1.EventTypeNormal, "Sync", "Registered Temporal namespace")
-			result, readyErr := r.setReady(ctx, resource, "Temporal namespace registered")
+			readyErr := r.setReady(ctx, resource, "Temporal namespace registered")
 			if readyErr == nil {
 				r.resetTemporalRetryState(resource)
 			}
-			return result, readyErr
+			return ctrl.Result{}, readyErr
 		}
 	}
 
@@ -176,11 +177,11 @@ func (r *TemporalNamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		r.emitEvent(resource, corev1.EventTypeNormal, "Sync", "Updated Temporal namespace retention")
 	}
 
-	result, readyErr := r.setReady(ctx, resource, "Temporal namespace is synchronized")
+	readyErr := r.setReady(ctx, resource, "Temporal namespace is synchronized")
 	if readyErr == nil {
 		r.resetTemporalRetryState(resource)
 	}
-	return result, readyErr
+	return ctrl.Result{}, readyErr
 }
 
 func (r *TemporalNamespaceReconciler) updateNamespace(ctx context.Context, name string, described *workflowservice.DescribeNamespaceResponse, retentionDays int32) error {
@@ -240,7 +241,7 @@ func (r *TemporalNamespaceReconciler) reconcileDeletion(ctx context.Context, res
 		return ctrl.Result{RequeueAfter: workersRecheckInterval}, nil
 	}
 	if r.TemporalClient == nil {
-		return r.reconcilePermanentError(ctx, resource, errors.New("Temporal client is not configured"))
+		return r.reconcilePermanentError(ctx, resource, errors.New("temporal client is not configured"))
 	}
 
 	_, err = r.TemporalClient.OperatorService().DeleteNamespace(ctx, &operatorservice.DeleteNamespaceRequest{Namespace: resource.Name})
@@ -363,7 +364,7 @@ func temporalNamespaceOwnedBy(resource *temporalv1alpha1.TemporalNamespace, desc
 
 func isRetryableTemporalError(err error) bool {
 	var networkErr net.Error
-	if errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) {
+	if errors.As(err, &networkErr) && networkErr.Timeout() {
 		return true
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
@@ -385,17 +386,14 @@ func isRetryableTemporalCode(code codes.Code) bool {
 	}
 }
 
-func (r *TemporalNamespaceReconciler) setReady(ctx context.Context, resource *temporalv1alpha1.TemporalNamespace, message string) (ctrl.Result, error) {
-	if err := r.setCondition(ctx, resource, metav1.ConditionTrue, "Synced", message); err != nil {
-		return ctrl.Result{}, err
-	}
-	return ctrl.Result{}, nil
+func (r *TemporalNamespaceReconciler) setReady(ctx context.Context, resource *temporalv1alpha1.TemporalNamespace, message string) error {
+	return r.setCondition(ctx, resource, metav1.ConditionTrue, "Synced", message)
 }
 
 func (r *TemporalNamespaceReconciler) setCondition(ctx context.Context, resource *temporalv1alpha1.TemporalNamespace, status metav1.ConditionStatus, reason, message string) error {
 	before := append([]metav1.Condition(nil), resource.Status.Conditions...)
 	apiMeta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               readyConditionType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -447,9 +445,7 @@ func cloneStringMap(values map[string]string) map[string]string {
 		return nil
 	}
 	clone := make(map[string]string, len(values))
-	for key, value := range values {
-		clone[key] = value
-	}
+	maps.Copy(clone, values)
 	return clone
 }
 

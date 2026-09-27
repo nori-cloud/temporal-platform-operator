@@ -57,6 +57,7 @@ type TemporalWorkerReconciler struct {
 // +kubebuilder:rbac:groups=temporal.io,resources=workerdeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=temporal.io,resources=workerdeployments/status,verbs=get
 
+//nolint:gocyclo // reconciliation coordinates several independent Kubernetes resources and lifecycle states.
 func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	resource := &temporalv1alpha1.TemporalWorker{}
 	if err := r.Get(ctx, req.NamespacedName, resource); err != nil {
@@ -160,7 +161,7 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	conditions := append([]metav1.Condition(nil), workerDeployment.Status.Conditions...)
 	if len(conditions) == 0 {
 		conditions = []metav1.Condition{{
-			Type:               "Ready",
+			Type:               readyConditionType,
 			Status:             metav1.ConditionUnknown,
 			Reason:             "WaitingForWorkerDeployment",
 			Message:            "WorkerDeployment has not reported a status yet",
@@ -175,7 +176,7 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 func (r *TemporalWorkerReconciler) setPending(ctx context.Context, resource *temporalv1alpha1.TemporalWorker, reason, message string) error {
 	conditions := []metav1.Condition{{
-		Type:               "Ready",
+		Type:               readyConditionType,
 		Status:             metav1.ConditionUnknown,
 		Reason:             reason,
 		Message:            message,
@@ -237,7 +238,7 @@ func workerDeploymentSpec(resource *temporalv1alpha1.TemporalWorker, connectionN
 }
 
 func isReady(conditions []metav1.Condition) bool {
-	condition := apiMeta.FindStatusCondition(conditions, "Ready")
+	condition := apiMeta.FindStatusCondition(conditions, readyConditionType)
 	return condition != nil && condition.Status == metav1.ConditionTrue
 }
 

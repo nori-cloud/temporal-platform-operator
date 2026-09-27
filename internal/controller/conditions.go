@@ -16,31 +16,7 @@ limitations under the License.
 
 package controller
 
-import (
-	apiMeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+const (
+	temporalFinalizer  = "temporal.nori-cloud.io/finalizer"
+	readyConditionType = "Ready"
 )
-
-const temporalFinalizer = "temporal.nori-cloud.io/finalizer"
-
-func setPendingCondition(conditions *[]metav1.Condition, generation int64, message string) bool {
-	before := len(*conditions)
-	apiMeta.SetStatusCondition(conditions, metav1.Condition{
-		Type:               "Ready",
-		Status:             metav1.ConditionUnknown,
-		Reason:             "ReconciliationPending",
-		Message:            message,
-		ObservedGeneration: generation,
-	})
-	if len(*conditions) != before {
-		return true
-	}
-	for _, condition := range *conditions {
-		if condition.Type == "Ready" && condition.ObservedGeneration == generation &&
-			condition.Status == metav1.ConditionUnknown && condition.Reason == "ReconciliationPending" &&
-			condition.Message == message {
-			return false
-		}
-	}
-	return true
-}

@@ -45,11 +45,15 @@ import (
 )
 
 const (
-	temporalProxyImage = "temporalio/temporal-proxy:v0.7.0"
-	proxyPort          = int32(7233)
-	proxyConfigKey     = "config.yaml"
-	proxyConfigMount   = "/etc/proxy"
-	frontendAddressEnv = "TEMPORAL_FRONTEND_ADDRESS"
+	temporalProxyImage   = "temporalio/temporal-proxy:v0.7.0"
+	proxyPort            = int32(7233)
+	proxyConfigKey       = "config.yaml"
+	proxyConfigMount     = "/etc/proxy"
+	frontendAddressEnv   = "TEMPORAL_FRONTEND_ADDRESS"
+	defaultProxyName     = "default"
+	defaultProxyWorkload = "temporal-proxy"
+	proxyNameLabel       = "app.kubernetes.io/name"
+	proxyInstanceLabel   = "app.kubernetes.io/instance"
 )
 
 // TemporalProxyReconciler reconciles a TemporalProxy object.
@@ -90,7 +94,7 @@ func (r *TemporalProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, r.Update(ctx, resource)
 	}
 
-	if resource.Name == "default" {
+	if resource.Name == defaultProxyName {
 		return r.reconcileDefault(ctx, resource)
 	}
 
@@ -159,7 +163,7 @@ func (r *TemporalProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	resource.Status.Routes = []string{"*"}
 	resource.Status.ConfigRevision = hash
 	apiMeta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               readyConditionType,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Synced",
 		Message:            "Temporal proxy is ready",
@@ -186,7 +190,7 @@ func (r *TemporalProxyReconciler) reconcileDefault(ctx context.Context, resource
 		return ctrl.Result{}, err
 	}
 
-	deploymentKey := client.ObjectKey{Namespace: resource.Namespace, Name: "temporal-proxy"}
+	deploymentKey := client.ObjectKey{Namespace: resource.Namespace, Name: defaultProxyWorkload}
 	if err := r.Get(ctx, deploymentKey, deployment); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "DeploymentNotFound", "Helm-managed default proxy Deployment does not exist", nil, configRevisionFromConfigMap(configMap))
@@ -194,7 +198,7 @@ func (r *TemporalProxyReconciler) reconcileDefault(ctx context.Context, resource
 		return ctrl.Result{}, err
 	}
 
-	if err := r.Get(ctx, client.ObjectKey{Namespace: resource.Namespace, Name: "temporal-proxy"}, service); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Namespace: resource.Namespace, Name: defaultProxyWorkload}, service); err != nil {
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "ServiceNotFound", "Helm-managed default proxy Service does not exist", nil, configRevisionFromConfigMap(configMap))
 		}
@@ -235,7 +239,7 @@ func (r *TemporalProxyReconciler) setDefaultStatus(ctx context.Context, resource
 	resource.Status.Routes = []string{"*"}
 	resource.Status.ConfigRevision = configRevision
 	apiMeta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               readyConditionType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
@@ -275,7 +279,7 @@ func (r *TemporalProxyReconciler) setError(ctx context.Context, resource *tempor
 	r.event(resource, corev1.EventTypeWarning, "Error", reconcileErr.Error())
 	resource.Status.ObservedGeneration = resource.Generation
 	apiMeta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
-		Type:               "Ready",
+		Type:               readyConditionType,
 		Status:             metav1.ConditionFalse,
 		Reason:             "Error",
 		Message:            reconcileErr.Error(),
@@ -294,6 +298,7 @@ func (r *TemporalProxyReconciler) event(object client.Object, eventType, reason,
 }
 
 func (r *TemporalProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	//nolint:staticcheck // controller-runtime's new event API is not yet compatible with this recorder field.
 	r.Recorder = mgr.GetEventRecorderFor("temporalproxy")
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&temporalv1alpha1.TemporalProxy{}).
@@ -310,26 +315,26 @@ func (r *TemporalProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 }
 
 func mapDefaultProxyConfigMap(ctx context.Context, object client.Object) []reconcile.Request {
-	return mapDefaultProxyResource(object, "temporal-proxy-config")
+	return mapDefaultProxyResource(object, defaultProxyWorkload+"-config")
 }
 
 func mapDefaultProxyDeployment(ctx context.Context, object client.Object) []reconcile.Request {
-	return mapDefaultProxyResource(object, "temporal-proxy")
+	return mapDefaultProxyResource(object, defaultProxyWorkload)
 }
 
 func mapDefaultProxyService(ctx context.Context, object client.Object) []reconcile.Request {
-	return mapDefaultProxyResource(object, "temporal-proxy")
+	return mapDefaultProxyResource(object, defaultProxyWorkload)
 }
 
 func mapDefaultProxyNetworkPolicy(ctx context.Context, object client.Object) []reconcile.Request {
-	return mapDefaultProxyResource(object, "temporal-proxy")
+	return mapDefaultProxyResource(object, defaultProxyWorkload)
 }
 
 func mapDefaultProxyResource(object client.Object, name string) []reconcile.Request {
 	if object.GetName() != name {
 		return nil
 	}
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: object.GetNamespace(), Name: "default"}}}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: object.GetNamespace(), Name: defaultProxyName}}}
 }
 
 func validateFrontendAddress(address string) error {
@@ -354,15 +359,15 @@ func configRevision(config string) string {
 
 func proxyLabels(resource *temporalv1alpha1.TemporalProxy) map[string]string {
 	return map[string]string{
-		"app.kubernetes.io/name":       "temporal-proxy",
-		"app.kubernetes.io/instance":   resource.Name,
+		proxyNameLabel:                 defaultProxyWorkload,
+		proxyInstanceLabel:             resource.Name,
 		"app.kubernetes.io/managed-by": "temporal-platform-operator",
 	}
 }
 
 func proxyBaseName(resource *temporalv1alpha1.TemporalProxy) string {
-	if resource.Name == "default" {
-		return "temporal-proxy"
+	if resource.Name == defaultProxyName {
+		return defaultProxyWorkload
 	}
 	return resource.Name + "-proxy"
 }
@@ -387,7 +392,7 @@ func proxyDeploymentSpec(resource *temporalv1alpha1.TemporalProxy, hash string) 
 	labels := proxyLabels(resource)
 	return appsv1.DeploymentSpec{
 		Replicas: int32ptr(1),
-		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/instance": resource.Name, "app.kubernetes.io/name": "temporal-proxy"}},
+		Selector: &metav1.LabelSelector{MatchLabels: map[string]string{proxyInstanceLabel: resource.Name, proxyNameLabel: defaultProxyWorkload}},
 		Template: corev1.PodTemplateSpec{
 			ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{"temporal.nori-cloud.io/config-hash": hash}},
 			Spec: corev1.PodSpec{Containers: []corev1.Container{{
@@ -402,11 +407,11 @@ func proxyDeploymentSpec(resource *temporalv1alpha1.TemporalProxy, hash string) 
 }
 
 func proxyServiceSpec(resource *temporalv1alpha1.TemporalProxy) corev1.ServiceSpec {
-	return corev1.ServiceSpec{Selector: map[string]string{"app.kubernetes.io/instance": resource.Name, "app.kubernetes.io/name": "temporal-proxy"}, Ports: []corev1.ServicePort{{Name: "grpc", Port: proxyPort, TargetPort: intstr.FromInt32(proxyPort), Protocol: corev1.ProtocolTCP}}}
+	return corev1.ServiceSpec{Selector: map[string]string{proxyInstanceLabel: resource.Name, proxyNameLabel: defaultProxyWorkload}, Ports: []corev1.ServicePort{{Name: "grpc", Port: proxyPort, TargetPort: intstr.FromInt32(proxyPort), Protocol: corev1.ProtocolTCP}}}
 }
 
 func proxyNetworkPolicySpec(resource *temporalv1alpha1.TemporalProxy) networkingv1.NetworkPolicySpec {
-	selector := metav1.LabelSelector{MatchLabels: map[string]string{"app.kubernetes.io/instance": resource.Name, "app.kubernetes.io/name": "temporal-proxy"}}
+	selector := metav1.LabelSelector{MatchLabels: map[string]string{proxyInstanceLabel: resource.Name, proxyNameLabel: defaultProxyWorkload}}
 	port := intstr.FromInt32(proxyPort)
 	return networkingv1.NetworkPolicySpec{PodSelector: selector, PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress}, Ingress: []networkingv1.NetworkPolicyIngressRule{{Ports: []networkingv1.NetworkPolicyPort{{Port: &port, Protocol: protocolPtr(corev1.ProtocolTCP)}}}}, Egress: []networkingv1.NetworkPolicyEgressRule{{}}}
 }
