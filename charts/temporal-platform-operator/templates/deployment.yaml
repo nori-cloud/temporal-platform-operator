@@ -3,7 +3,7 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
+  name: temporal-{{ $name }}-controller
   namespace: {{ include "temporal-platform-operator.namespace" $ }}
   labels:
     {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
