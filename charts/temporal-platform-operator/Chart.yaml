@@ -2,8 +2,8 @@ apiVersion: v2
 name: temporal-platform-operator
 description: The Temporal platform operator and direct Temporal frontend controllers
 type: application
-version: 0.2.2
-appVersion: "0.2.2"
+version: 0.2.3
+appVersion: "0.2.3"
 
 # The worker controller is intentionally consumed as a dependency rather than
 # copied into this chart. The CRD chart is kept separate so Helm can install

@@ -3,7 +3,7 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-metrics
+  name: temporal-{{ $name }}-controller-metrics
   namespace: {{ include "temporal-platform-operator.namespace" $ }}
   labels:
     {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
