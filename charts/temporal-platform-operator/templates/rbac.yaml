@@ -21,6 +21,9 @@ rules:
   - apiGroups: [temporal.nori-cloud.io]
     resources: [temporalnamespaces/finalizers]
     verbs: [update]
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalworkers]
+    verbs: [get, list, watch]
 {{- else if eq $name "worker" }}
   - apiGroups: [temporal.nori-cloud.io]
     resources: [temporalworkers]
