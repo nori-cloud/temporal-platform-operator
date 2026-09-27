@@ -124,8 +124,7 @@ spec:
     - Egress
   ingress:
     - ports:
-        - name: temporal
-          port: 7233
+        - port: 7233
           protocol: TCP
   egress:
     - {}
