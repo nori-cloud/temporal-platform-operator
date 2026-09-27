@@ -450,6 +450,9 @@ func cloneStringMap(values map[string]string) map[string]string {
 }
 
 func isTemporalNotFound(err error) bool {
-	var notFound *serviceerror.NamespaceNotFound
-	return errors.As(err, &notFound) || goapierrors.Code(err) == codes.NotFound
+	var namespaceNotFound *serviceerror.NamespaceNotFound
+	var notFound *serviceerror.NotFound
+	return errors.As(err, &namespaceNotFound) ||
+		errors.As(err, &notFound) ||
+		goapierrors.Code(err) == codes.NotFound
 }
