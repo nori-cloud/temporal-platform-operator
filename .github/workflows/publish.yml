@@ -1,0 +1,106 @@
+name: Publish
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/nori-cloud/temporal-platform-operator
+  CHART_REPOSITORY: oci://ghcr.io/nori-cloud/charts
+  CHART_PATH: charts/temporal-platform-operator
+
+jobs:
+  publish:
+    name: Validate and publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone the code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Go
+        uses: actions/setup-go@4b73464bb391d4059bd26b0524d20df3927bd417 # v6.3.0
+        with:
+          go-version-file: go.mod
+
+      - name: Build Go packages
+        run: go build ./...
+
+      - name: Validate generated manifests
+        run: |
+          make manifests
+          git diff --exit-code -- config/crd/bases
+
+      - name: Install Helm
+        uses: azure/setup-helm@5119fcb9089d432beecbf79bb2c7915207344b78 # v3.5
+        with:
+          version: v3.12.0
+
+      - name: Determine image and chart versions
+        id: versions
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+            image_tag="$version"
+          else
+            image_tag="main"
+            base_version="$(
+              awk '/^version:/{print $2; exit}' "$CHART_PATH/Chart.yaml"
+            )"
+            version="${base_version}-main.${GITHUB_SHA:0:12}"
+          fi
+
+          echo "image_tag=$image_tag" >> "$GITHUB_OUTPUT"
+          echo "chart_version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set chart image tag
+        env:
+          IMAGE_TAG: ${{ steps.versions.outputs.image_tag }}
+        run: |
+          sed -i -E "0,/^  tag: .*/s//  tag: ${IMAGE_TAG}/" \
+            "$CHART_PATH/values.yaml"
+
+      - name: Build Helm dependencies
+        run: helm dependency build "$CHART_PATH"
+
+      - name: Lint Helm chart
+        run: helm lint --strict "$CHART_PATH"
+
+      - name: Render Helm chart
+        run: |
+          helm template temporal-platform-operator "$CHART_PATH" \
+            >/tmp/temporal-platform-operator.yaml
+
+      - name: Log in to GHCR
+        env:
+          CR_PAT: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$CR_PAT" | docker login ghcr.io \
+            --username "$GITHUB_ACTOR" --password-stdin
+
+      - name: Build and publish operator image
+        env:
+          IMAGE_TAG: ${{ steps.versions.outputs.image_tag }}
+        run: |
+          docker build --tag "${IMAGE_NAME}:${IMAGE_TAG}" .
+          docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Package and publish Helm chart
+        env:
+          CHART_VERSION: ${{ steps.versions.outputs.chart_version }}
+          IMAGE_TAG: ${{ steps.versions.outputs.image_tag }}
+        run: |
+          helm package "$CHART_PATH" --version "$CHART_VERSION" \
+            --app-version "$IMAGE_TAG"
+          package="temporal-platform-operator-${CHART_VERSION}.tgz"
+          helm push "$package" \
+            "$CHART_REPOSITORY"
