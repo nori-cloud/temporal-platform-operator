@@ -4,47 +4,99 @@ kind: ClusterRole
 metadata:
   name: manager-role
 rules:
-  - apiGroups:
-      - temporal.io
-    resources:
-      - workerdeployments
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - temporal.nori-cloud.io
-    resources:
-      - temporalnamespaces
-      - temporalproxies
-      - temporalworkers
-    verbs:
-      - create
-      - delete
-      - get
-      - list
-      - patch
-      - update
-      - watch
-  - apiGroups:
-      - temporal.nori-cloud.io
-    resources:
-      - temporalnamespaces/finalizers
-      - temporalproxies/finalizers
-      - temporalworkers/finalizers
-    verbs:
-      - update
-  - apiGroups:
-      - temporal.nori-cloud.io
-    resources:
-      - temporalnamespaces/status
-      - temporalproxies/status
-      - temporalworkers/status
-    verbs:
-      - get
-      - patch
-      - update
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - services
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - ""
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+  - update
+- apiGroups:
+  - apps
+  resources:
+  - deployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - temporal.io
+  resources:
+  - connections
+  - workerdeployments
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - temporal.io
+  resources:
+  - workerdeployments/status
+  verbs:
+  - get
+- apiGroups:
+  - temporal.nori-cloud.io
+  resources:
+  - temporalnamespaces
+  - temporalproxies
+  - temporalworkers
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - temporal.nori-cloud.io
+  resources:
+  - temporalnamespaces/finalizers
+  - temporalproxies/finalizers
+  - temporalworkers/finalizers
+  verbs:
+  - update
+- apiGroups:
+  - temporal.nori-cloud.io
+  resources:
+  - temporalnamespaces/status
+  - temporalproxies/status
+  - temporalworkers/status
+  verbs:
+  - get
+  - patch
+  - update
