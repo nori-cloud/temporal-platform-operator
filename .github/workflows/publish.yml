@@ -52,7 +52,7 @@ jobs:
             version="${GITHUB_REF_NAME#v}"
             image_tag="$version"
           else
-            image_tag="main"
+            image_tag="$GITHUB_SHA"
             base_version="$(
               awk '/^version:/{print $2; exit}' "$CHART_PATH/Chart.yaml"
             )"
