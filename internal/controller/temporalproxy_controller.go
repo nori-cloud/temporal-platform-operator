@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -37,6 +38,8 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	temporalv1alpha1 "github.com/nori-cloud/temporal-platform-operator/api/v1alpha1"
 )
@@ -85,6 +88,10 @@ func (r *TemporalProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	if !controllerutil.ContainsFinalizer(resource, temporalFinalizer) {
 		controllerutil.AddFinalizer(resource, temporalFinalizer)
 		return ctrl.Result{}, r.Update(ctx, resource)
+	}
+
+	if resource.Name == "default" {
+		return r.reconcileDefault(ctx, resource)
 	}
 
 	frontendAddress := os.Getenv(frontendAddressEnv)
@@ -164,6 +171,106 @@ func (r *TemporalProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
+const defaultProxyRecheckInterval = 5 * time.Second
+
+func (r *TemporalProxyReconciler) reconcileDefault(ctx context.Context, resource *temporalv1alpha1.TemporalProxy) (ctrl.Result, error) {
+	configMap := &corev1.ConfigMap{}
+	deployment := &appsv1.Deployment{}
+	service := &corev1.Service{}
+
+	configMapKey := client.ObjectKey{Namespace: resource.Namespace, Name: "temporal-proxy-config"}
+	if err := r.Get(ctx, configMapKey, configMap); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "ConfigMapNotFound", "Helm-managed default proxy ConfigMap does not exist", nil, "")
+		}
+		return ctrl.Result{}, err
+	}
+
+	deploymentKey := client.ObjectKey{Namespace: resource.Namespace, Name: "temporal-proxy"}
+	if err := r.Get(ctx, deploymentKey, deployment); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "DeploymentNotFound", "Helm-managed default proxy Deployment does not exist", nil, configRevisionFromConfigMap(configMap))
+		}
+		return ctrl.Result{}, err
+	}
+
+	if err := r.Get(ctx, client.ObjectKey{Namespace: resource.Namespace, Name: "temporal-proxy"}, service); err != nil {
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "ServiceNotFound", "Helm-managed default proxy Service does not exist", nil, configRevisionFromConfigMap(configMap))
+		}
+		return ctrl.Result{}, err
+	}
+
+	serviceStatus := &temporalv1alpha1.TemporalProxyServiceStatus{
+		Name:      service.Name,
+		Namespace: service.Namespace,
+		Endpoint:  fmt.Sprintf("%s.%s.svc.cluster.local:%d", service.Name, service.Namespace, proxyPort),
+	}
+	configRevision := configRevisionFromConfigMap(configMap)
+	if configMap.Data[proxyConfigKey] == "" {
+		return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "ConfigMapInvalid", "Helm-managed default proxy ConfigMap has no config.yaml", serviceStatus, configRevision)
+	}
+	if err := validateProxyService(service); err != nil {
+		return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "ServiceNotReady", err.Error(), serviceStatus, configRevision)
+	}
+	if err := validateProxyDeployment(deployment); err != nil {
+		return ctrl.Result{RequeueAfter: defaultProxyRecheckInterval}, r.setDefaultNotReady(ctx, resource, "DeploymentNotReady", err.Error(), serviceStatus, configRevision)
+	}
+
+	r.event(resource, corev1.EventTypeNormal, "Observed", "observed ready Helm-managed default proxy infrastructure")
+	if err := r.setDefaultStatus(ctx, resource, metav1.ConditionTrue, "Observed", "Helm-managed default proxy is ready", serviceStatus, configRevision); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
+}
+
+func (r *TemporalProxyReconciler) setDefaultNotReady(ctx context.Context, resource *temporalv1alpha1.TemporalProxy, reason, message string, service *temporalv1alpha1.TemporalProxyServiceStatus, configRevision string) error {
+	r.event(resource, corev1.EventTypeWarning, reason, message)
+	return r.setDefaultStatus(ctx, resource, metav1.ConditionFalse, reason, message, service, configRevision)
+}
+
+func (r *TemporalProxyReconciler) setDefaultStatus(ctx context.Context, resource *temporalv1alpha1.TemporalProxy, status metav1.ConditionStatus, reason, message string, service *temporalv1alpha1.TemporalProxyServiceStatus, configRevision string) error {
+	resource.Status.ObservedGeneration = resource.Generation
+	resource.Status.Service = service
+	resource.Status.Routes = []string{"*"}
+	resource.Status.ConfigRevision = configRevision
+	apiMeta.SetStatusCondition(&resource.Status.Conditions, metav1.Condition{
+		Type:               "Ready",
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: resource.Generation,
+	})
+	return r.Status().Update(ctx, resource)
+}
+
+func validateProxyService(service *corev1.Service) error {
+	if len(service.Spec.Selector) == 0 {
+		return errors.New("default proxy Service has no pod selector")
+	}
+	for _, port := range service.Spec.Ports {
+		if port.Port == proxyPort {
+			return nil
+		}
+	}
+	return fmt.Errorf("default proxy Service does not expose port %d", proxyPort)
+}
+
+func validateProxyDeployment(deployment *appsv1.Deployment) error {
+	desiredReplicas := int32(1)
+	if deployment.Spec.Replicas != nil {
+		desiredReplicas = *deployment.Spec.Replicas
+	}
+	if deployment.Status.AvailableReplicas < desiredReplicas {
+		return fmt.Errorf("default proxy Deployment has %d/%d available replicas", deployment.Status.AvailableReplicas, desiredReplicas)
+	}
+	return nil
+}
+
+func configRevisionFromConfigMap(configMap *corev1.ConfigMap) string {
+	return configRevision(configMap.Data[proxyConfigKey])
+}
+
 func (r *TemporalProxyReconciler) setError(ctx context.Context, resource *temporalv1alpha1.TemporalProxy, reconcileErr error) error {
 	r.event(resource, corev1.EventTypeWarning, "Error", reconcileErr.Error())
 	resource.Status.ObservedGeneration = resource.Generation
@@ -194,8 +301,35 @@ func (r *TemporalProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&appsv1.Deployment{}).
 		Owns(&corev1.Service{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Watches(&corev1.ConfigMap{}, handler.EnqueueRequestsFromMapFunc(mapDefaultProxyConfigMap)).
+		Watches(&appsv1.Deployment{}, handler.EnqueueRequestsFromMapFunc(mapDefaultProxyDeployment)).
+		Watches(&corev1.Service{}, handler.EnqueueRequestsFromMapFunc(mapDefaultProxyService)).
+		Watches(&networkingv1.NetworkPolicy{}, handler.EnqueueRequestsFromMapFunc(mapDefaultProxyNetworkPolicy)).
 		Named("temporalproxy").
 		Complete(r)
+}
+
+func mapDefaultProxyConfigMap(ctx context.Context, object client.Object) []reconcile.Request {
+	return mapDefaultProxyResource(object, "temporal-proxy-config")
+}
+
+func mapDefaultProxyDeployment(ctx context.Context, object client.Object) []reconcile.Request {
+	return mapDefaultProxyResource(object, "temporal-proxy")
+}
+
+func mapDefaultProxyService(ctx context.Context, object client.Object) []reconcile.Request {
+	return mapDefaultProxyResource(object, "temporal-proxy")
+}
+
+func mapDefaultProxyNetworkPolicy(ctx context.Context, object client.Object) []reconcile.Request {
+	return mapDefaultProxyResource(object, "temporal-proxy")
+}
+
+func mapDefaultProxyResource(object client.Object, name string) []reconcile.Request {
+	if object.GetName() != name {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{Namespace: object.GetNamespace(), Name: "default"}}}
 }
 
 func validateFrontendAddress(address string) error {
