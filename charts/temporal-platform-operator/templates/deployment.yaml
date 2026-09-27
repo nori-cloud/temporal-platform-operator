@@ -30,6 +30,9 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           command:
             - /manager
+          env:
+            - name: TEMPORAL_FRONTEND_ADDRESS
+              value: {{ .Values.temporal.frontendAddress | quote }}
           args:
             - --leader-elect
             - --metrics-bind-address=:8443
