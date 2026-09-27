@@ -33,6 +33,7 @@ type TemporalWorkerSpec struct {
 	TemporalNamespaceRef corev1.LocalObjectReference `json:"temporalNamespaceRef"`
 
 	// Template describes the worker pod template.
+	// +kubebuilder:validation:XPreserveUnknownFields
 	// +required
 	Template corev1.PodTemplateSpec `json:"template"`
 

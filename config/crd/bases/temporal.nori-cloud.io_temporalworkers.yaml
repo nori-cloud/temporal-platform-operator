@@ -8517,6 +8517,7 @@ spec:
                     - containers
                     type: object
                 type: object
+                x-kubernetes-preserve-unknown-fields: true
               temporalNamespaceRef:
                 description: TemporalNamespaceRef references the TemporalNamespace
                   used by this worker.
