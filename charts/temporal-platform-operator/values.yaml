@@ -5,7 +5,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/nori-cloud/temporal-platform-operator
-  tag: 73b2cacb6889dc0d78dbb2215f1054f6e4b0d7a3
+  tag: 42b398ae9b63382eaa6558c4ed4e013a82b3bcfd
   pullPolicy: IfNotPresent
   pullSecrets: []
 

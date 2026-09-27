@@ -2,6 +2,7 @@
   "ignore": [
     "**/config/crd/bases/**",
     "**/config/rbac/role.yaml",
-    "**/charts/temporal-platform-operator/crds/**"
+    "**/charts/temporal-platform-operator/crds/**",
+    "Makefile"
   ]
 }
