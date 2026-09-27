@@ -19,7 +19,9 @@ package main
 import (
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
+	"strings"
 
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
@@ -34,6 +36,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	temporalclient "go.temporal.io/sdk/client"
 
 	temporalv1alpha1 "github.com/nori-cloud/temporal-platform-operator/api/v1alpha1"
 	"github.com/nori-cloud/temporal-platform-operator/internal/controller"
@@ -88,6 +92,18 @@ func main() {
 	flag.Parse()
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	frontendAddress, ok := os.LookupEnv("TEMPORAL_FRONTEND_ADDRESS")
+	if !ok || strings.TrimSpace(frontendAddress) == "" {
+		setupLog.Error(fmt.Errorf("TEMPORAL_FRONTEND_ADDRESS is required"), "Failed to configure Temporal client")
+		os.Exit(1)
+	}
+	temporalClient, err := temporalclient.NewClient(temporalclient.Options{HostPort: frontendAddress})
+	if err != nil {
+		setupLog.Error(err, "Failed to create Temporal client", "address", frontendAddress)
+		os.Exit(1)
+	}
+	defer temporalClient.Close()
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -181,8 +197,10 @@ func main() {
 	}
 
 	if err := (&controller.TemporalNamespaceReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:         mgr.GetClient(),
+		Scheme:         mgr.GetScheme(),
+		TemporalClient: temporalClient,
+		Recorder:       mgr.GetEventRecorderFor("temporalnamespace"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "temporalnamespace")
 		os.Exit(1)
