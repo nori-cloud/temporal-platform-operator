@@ -1,0 +1,11 @@
+extends: default
+
+ignore: |
+  config/crd/bases/**
+  config/rbac/role.yaml
+  charts/temporal-platform-operator/crds/**
+
+rules:
+  line-length:
+    max: 120
+    level: warning
