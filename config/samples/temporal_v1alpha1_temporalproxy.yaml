@@ -1,0 +1,9 @@
+apiVersion: temporal.nori-cloud.io/v1alpha1
+kind: TemporalProxy
+metadata:
+  labels:
+    app.kubernetes.io/name: temporal-platform-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: temporalproxy-sample
+spec:
+  routePolicy: AllNamespaces

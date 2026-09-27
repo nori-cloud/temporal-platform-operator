@@ -34,6 +34,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+
+	temporalv1alpha1 "github.com/nori-cloud/temporal-platform-operator/api/v1alpha1"
+	"github.com/nori-cloud/temporal-platform-operator/internal/controller"
+	temporaliov1alpha1 "github.com/temporalio/temporal-worker-controller/api/v1alpha1"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -45,6 +49,8 @@ var (
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
+	utilruntime.Must(temporalv1alpha1.AddToScheme(scheme))
+	utilruntime.Must(temporaliov1alpha1.AddToScheme(scheme))
 	// +kubebuilder:scaffold:scheme
 }
 
@@ -174,6 +180,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	if err := (&controller.TemporalNamespaceReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "temporalnamespace")
+		os.Exit(1)
+	}
+	if err := (&controller.TemporalProxyReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "temporalproxy")
+		os.Exit(1)
+	}
+	if err := (&controller.TemporalWorkerReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		setupLog.Error(err, "Failed to create controller", "controller", "temporalworker")
+		os.Exit(1)
+	}
 	// +kubebuilder:scaffold:builder
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

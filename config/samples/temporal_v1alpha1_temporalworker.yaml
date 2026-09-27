@@ -1,0 +1,16 @@
+apiVersion: temporal.nori-cloud.io/v1alpha1
+kind: TemporalWorker
+metadata:
+  labels:
+    app.kubernetes.io/name: temporal-platform-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: temporalworker-sample
+spec:
+  temporalNamespaceRef:
+    name: temporalnamespace-sample
+  template:
+    spec:
+      containers:
+        - name: worker
+          image: example.com/temporal-worker:latest
+  replicas: 1

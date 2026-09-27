@@ -1,0 +1,16 @@
+# This kustomization.yaml is not intended to be run by itself,
+# since it depends on service name and namespace that are out of this package.
+# It should be run by config/default.
+resources:
+  - bases/temporal.nori-cloud.io_temporalnamespaces.yaml
+  - bases/temporal.nori-cloud.io_temporalproxies.yaml
+  - bases/temporal.nori-cloud.io_temporalworkers.yaml
+# +kubebuilder:scaffold:crdkustomizeresource
+
+# [WEBHOOK] To enable webhook, uncomment the sections with the [WEBHOOK] prefix.
+# +kubebuilder:scaffold:crdkustomizewebhookpatch
+
+# [WEBHOOK] To enable webhook, uncomment the following section to teach
+# kustomize how to substitute names in CRD conversion webhooks.
+# configurations:
+#   - kustomizeconfig.yaml
