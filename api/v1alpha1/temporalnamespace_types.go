@@ -17,7 +17,6 @@ limitations under the License.
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -33,12 +32,6 @@ type TemporalNamespaceSpec struct {
 	// +kubebuilder:default=7
 	// +optional
 	RetentionDays int32 `json:"retentionDays,omitempty"`
-
-	// ProxyRef references the TemporalProxy used by this namespace.
-	// +kubebuilder:default={"name":"default"}
-	// +kubebuilder:validation:XValidation:rule="self.name != ''",message="proxyRef.name must be set"
-	// +required
-	ProxyRef corev1.LocalObjectReference `json:"proxyRef"`
 }
 
 // TemporalNamespaceStatus defines the observed state of TemporalNamespace.

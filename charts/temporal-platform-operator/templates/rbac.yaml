@@ -1,68 +1,67 @@
+{{- range $name, $controller := .Values.controllers }}
+{{- if $controller.enabled }}
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-manager
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}-controller
 rules:
   - apiGroups: [""]
-    resources: [configmaps, events, services]
-    verbs: [create, delete, get, list, patch, update, watch]
-  - apiGroups: [apps]
-    resources: [deployments]
-    verbs: [create, delete, get, list, patch, update, watch]
-  - apiGroups: [networking.k8s.io]
-    resources: [networkpolicies]
-    verbs: [create, delete, get, list, patch, update, watch]
-  - apiGroups:
-      - temporal.io
-    resources:
-      - workerdeployments
-    verbs: [create, delete, get, list, patch, update, watch]
-  - apiGroups:
-      - temporal.nori-cloud.io
-    resources:
-      - temporalnamespaces
-      - temporalproxies
-      - temporalworkers
-    verbs: [create, delete, get, list, patch, update, watch]
-  - apiGroups:
-      - temporal.nori-cloud.io
-    resources:
-      - temporalnamespaces/finalizers
-      - temporalproxies/finalizers
-      - temporalworkers/finalizers
+    resources: [events]
+    verbs: [create, patch, update]
+{{- if eq $name "namespace" }}
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalnamespaces]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalnamespaces/status]
+    verbs: [get, update, patch]
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalnamespaces/finalizers]
     verbs: [update]
-  - apiGroups:
-      - temporal.nori-cloud.io
-    resources:
-      - temporalnamespaces/status
-      - temporalproxies/status
-      - temporalworkers/status
-    verbs: [get, patch, update]
+{{- else if eq $name "worker" }}
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalworkers]
+    verbs: [get, list, watch, update, patch]
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalworkers/status]
+    verbs: [get, update, patch]
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalworkers/finalizers]
+    verbs: [update]
+  - apiGroups: [temporal.nori-cloud.io]
+    resources: [temporalnamespaces]
+    verbs: [get, list, watch]
+  - apiGroups: [temporal.io]
+    resources: [connections, workerdeployments]
+    verbs: [create, delete, get, list, patch, update, watch]
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-manager
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}-controller
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "temporal-platform-operator.fullname" . }}-manager
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
 subjects:
   - kind: ServiceAccount
-    name: {{ include "temporal-platform-operator.serviceAccountName" . }}
-    namespace: {{ include "temporal-platform-operator.namespace" . }}
+    name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
+    namespace: {{ include "temporal-platform-operator.namespace" $ }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-leader-election
-  namespace: {{ include "temporal-platform-operator.namespace" . }}
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-leader-election
+  namespace: {{ include "temporal-platform-operator.namespace" $ }}
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
 rules:
   - apiGroups: [""]
     resources: [configmaps, events]
@@ -74,15 +73,18 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-leader-election
-  namespace: {{ include "temporal-platform-operator.namespace" . }}
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-leader-election
+  namespace: {{ include "temporal-platform-operator.namespace" $ }}
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
-  name: {{ include "temporal-platform-operator.fullname" . }}-leader-election
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-leader-election
 subjects:
   - kind: ServiceAccount
-    name: {{ include "temporal-platform-operator.serviceAccountName" . }}
-    namespace: {{ include "temporal-platform-operator.namespace" . }}
+    name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
+    namespace: {{ include "temporal-platform-operator.namespace" $ }}
+---
+{{- end }}
+{{- end }}

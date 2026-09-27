@@ -1,10 +1,13 @@
+{{- range $name, $controller := .Values.controllers }}
+{{- if $controller.enabled }}
 apiVersion: v1
 kind: Service
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-metrics
-  namespace: {{ include "temporal-platform-operator.namespace" . }}
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-metrics
+  namespace: {{ include "temporal-platform-operator.namespace" $ }}
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}-controller
 spec:
   ports:
     - name: https
@@ -12,14 +15,15 @@ spec:
       protocol: TCP
       targetPort: metrics
   selector:
-    {{- include "temporal-platform-operator.selectorLabels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.selectorLabels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}-controller
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-metrics-auth
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-metrics-auth
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
 rules:
   - apiGroups: [authentication.k8s.io]
     resources: [tokenreviews]
@@ -31,24 +35,27 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-metrics-auth
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-metrics-auth
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: {{ include "temporal-platform-operator.fullname" . }}-metrics-auth
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-metrics-auth
 subjects:
   - kind: ServiceAccount
-    name: {{ include "temporal-platform-operator.serviceAccountName" . }}
-    namespace: {{ include "temporal-platform-operator.namespace" . }}
+    name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
+    namespace: {{ include "temporal-platform-operator.namespace" $ }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}-metrics-reader
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}-metrics-reader
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
 rules:
   - nonResourceURLs: ["/metrics"]
     verbs: [get]
+---
+{{- end }}
+{{- end }}

@@ -45,6 +45,12 @@ import (
 	// +kubebuilder:scaffold:imports
 )
 
+const (
+	controllerAll       = "all"
+	controllerNamespace = "namespace"
+	controllerWorker    = "worker"
+)
+
 var (
 	scheme   = runtime.NewScheme()
 	setupLog = ctrl.Log.WithName("setup")
@@ -64,6 +70,7 @@ func main() {
 	var metricsCertPath, metricsCertName, metricsCertKey string
 	var webhookCertPath, webhookCertName, webhookCertKey string
 	var enableLeaderElection bool
+	var controllerName string
 	var probeAddr string
 	var secureMetrics bool
 	var enableHTTP2 bool
@@ -74,6 +81,7 @@ func main() {
 	flag.BoolVar(&enableLeaderElection, "leader-elect", false,
 		"Enable leader election for controller manager. "+
 			"Enabling this will ensure there is only one active controller manager.")
+	flag.StringVar(&controllerName, "controller", controllerAll, "Controller to run: all, namespace, or worker.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", true,
 		"If set, the metrics endpoint is served securely via HTTPS. Use --metrics-secure=false to use HTTP instead.")
 	flag.StringVar(&webhookCertPath, "webhook-cert-path", "", "The directory that contains the webhook certificate.")
@@ -93,17 +101,26 @@ func main() {
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
 
+	if controllerName != controllerAll && controllerName != controllerNamespace && controllerName != controllerWorker {
+		setupLog.Error(fmt.Errorf("unsupported controller %q", controllerName), "Failed to configure controller")
+		os.Exit(1)
+	}
+
 	frontendAddress, ok := os.LookupEnv("TEMPORAL_FRONTEND_ADDRESS")
 	if !ok || strings.TrimSpace(frontendAddress) == "" {
 		setupLog.Error(fmt.Errorf("TEMPORAL_FRONTEND_ADDRESS is required"), "Failed to configure Temporal client")
 		os.Exit(1)
 	}
-	temporalClient, err := temporalclient.NewLazyClient(temporalclient.Options{HostPort: frontendAddress})
-	if err != nil {
-		setupLog.Error(err, "Failed to create Temporal client", "address", frontendAddress)
-		os.Exit(1)
+	var temporalClient temporalclient.Client
+	var err error
+	if controllerName != controllerWorker {
+		temporalClient, err = temporalclient.NewLazyClient(temporalclient.Options{HostPort: frontendAddress})
+		if err != nil {
+			setupLog.Error(err, "Failed to create Temporal client", "address", frontendAddress)
+			os.Exit(1)
+		}
+		defer temporalClient.Close()
 	}
-	defer temporalClient.Close()
 
 	// if the enable-http2 flag is false (the default), http/2 should be disabled
 	// due to its vulnerabilities. More specifically, disabling http/2 will
@@ -178,7 +195,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "6b9e6a30.nori-cloud.io",
+		LeaderElectionID:       "6b9e6a30-" + controllerName + ".nori-cloud.io",
 		// LeaderElectionReleaseOnCancel defines if the leader should step down voluntarily
 		// when the Manager ends. This requires the binary to immediately end when the
 		// Manager is stopped, otherwise, this setting is unsafe. Setting this significantly
@@ -196,29 +213,27 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := (&controller.TemporalNamespaceReconciler{
-		Client:         mgr.GetClient(),
-		Scheme:         mgr.GetScheme(),
-		TemporalClient: temporalClient,
-		//nolint:staticcheck // controller-runtime's new event API is not yet compatible with this recorder field.
-		Recorder: mgr.GetEventRecorderFor("temporalnamespace"),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "temporalnamespace")
-		os.Exit(1)
+	if controllerName == controllerAll || controllerName == controllerNamespace {
+		if err := (&controller.TemporalNamespaceReconciler{
+			Client:         mgr.GetClient(),
+			Scheme:         mgr.GetScheme(),
+			TemporalClient: temporalClient,
+			//nolint:staticcheck // controller-runtime's new event API is not yet compatible with this recorder field.
+			Recorder: mgr.GetEventRecorderFor("temporalnamespace"),
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "temporalnamespace")
+			os.Exit(1)
+		}
 	}
-	if err := (&controller.TemporalProxyReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "temporalproxy")
-		os.Exit(1)
-	}
-	if err := (&controller.TemporalWorkerReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
-	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "Failed to create controller", "controller", "temporalworker")
-		os.Exit(1)
+	if controllerName == controllerAll || controllerName == controllerWorker {
+		if err := (&controller.TemporalWorkerReconciler{
+			Client:          mgr.GetClient(),
+			Scheme:          mgr.GetScheme(),
+			FrontendAddress: frontendAddress,
+		}).SetupWithManager(mgr); err != nil {
+			setupLog.Error(err, "Failed to create controller", "controller", "temporalworker")
+			os.Exit(1)
+		}
 	}
 	// +kubebuilder:scaffold:builder
 

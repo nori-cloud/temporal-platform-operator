@@ -45,7 +45,8 @@ const (
 // TemporalWorkerReconciler reconciles a TemporalWorker object.
 type TemporalWorkerReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	FrontendAddress string
 }
 
 // +kubebuilder:rbac:groups=temporal.nori-cloud.io,resources=temporalworkers,verbs=get;list;watch;create;update;patch;delete
@@ -115,16 +116,8 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 	}
 
-	temporalProxy := &temporalv1alpha1.TemporalProxy{}
-	proxyKey := client.ObjectKey{Namespace: resource.Namespace, Name: temporalNamespace.Spec.ProxyRef.Name}
-	if err := r.Get(ctx, proxyKey, temporalProxy); err != nil {
-		if apierrors.IsNotFound(err) {
-			return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForTemporalProxy", "referenced TemporalProxy does not exist")
-		}
-		return ctrl.Result{}, err
-	}
-	if !isReady(temporalProxy.Status.Conditions) || temporalProxy.Status.Service == nil || temporalProxy.Status.Service.Endpoint == "" {
-		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForTemporalProxy", "referenced TemporalProxy is not Ready")
+	if r.FrontendAddress == "" {
+		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForFrontend", "Temporal frontend address is not configured")
 	}
 
 	connection := &temporaliov1alpha1.Connection{}
@@ -134,7 +127,7 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := controllerutil.SetControllerReference(resource, connection, r.Scheme); err != nil {
 			return err
 		}
-		connection.Spec.HostPort = temporalProxy.Status.Service.Endpoint
+		connection.Spec.HostPort = r.FrontendAddress
 		return nil
 	}); err != nil {
 		return ctrl.Result{}, err
@@ -248,7 +241,6 @@ func (r *TemporalWorkerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&temporalv1alpha1.TemporalWorker{}).
 		Owns(&temporaliov1alpha1.WorkerDeployment{}).
 		Watches(&temporalv1alpha1.TemporalNamespace{}, handler.EnqueueRequestsFromMapFunc(r.mapTemporalNamespaceToWorkers)).
-		Watches(&temporalv1alpha1.TemporalProxy{}, handler.EnqueueRequestsFromMapFunc(r.mapTemporalProxyToWorkers)).
 		Named("temporalworker").
 		Complete(r)
 }
@@ -262,32 +254,6 @@ func (r *TemporalWorkerReconciler) mapTemporalNamespaceToWorkers(ctx context.Con
 	for i := range workers.Items {
 		worker := &workers.Items[i]
 		if worker.Spec.TemporalNamespaceRef.Name == object.GetName() {
-			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(worker)})
-		}
-	}
-	return requests
-}
-
-func (r *TemporalWorkerReconciler) mapTemporalProxyToWorkers(ctx context.Context, object client.Object) []reconcile.Request {
-	namespaces := &temporalv1alpha1.TemporalNamespaceList{}
-	if err := r.List(ctx, namespaces, client.InNamespace(object.GetNamespace())); err != nil {
-		return nil
-	}
-	workers := &temporalv1alpha1.TemporalWorkerList{}
-	if err := r.List(ctx, workers, client.InNamespace(object.GetNamespace())); err != nil {
-		return nil
-	}
-	usedNamespaces := make(map[string]struct{})
-	for i := range namespaces.Items {
-		namespace := &namespaces.Items[i]
-		if namespace.Spec.ProxyRef.Name == object.GetName() {
-			usedNamespaces[namespace.Name] = struct{}{}
-		}
-	}
-	requests := make([]reconcile.Request, 0)
-	for i := range workers.Items {
-		worker := &workers.Items[i]
-		if _, ok := usedNamespaces[worker.Spec.TemporalNamespaceRef.Name]; ok {
 			requests = append(requests, reconcile.Request{NamespacedName: client.ObjectKeyFromObject(worker)})
 		}
 	}

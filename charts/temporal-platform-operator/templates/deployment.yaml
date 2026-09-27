@@ -1,43 +1,49 @@
+{{- range $name, $controller := .Values.controllers }}
+{{- if $controller.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "temporal-platform-operator.fullname" . }}
-  namespace: {{ include "temporal-platform-operator.namespace" . }}
+  name: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
+  namespace: {{ include "temporal-platform-operator.namespace" $ }}
   labels:
-    {{- include "temporal-platform-operator.labels" . | nindent 4 }}
+    {{- include "temporal-platform-operator.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $name }}-controller
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ $controller.replicaCount }}
   selector:
     matchLabels:
-      {{- include "temporal-platform-operator.selectorLabels" . | nindent 6 }}
+      {{- include "temporal-platform-operator.selectorLabels" $ | nindent 6 }}
+      app.kubernetes.io/component: {{ $name }}-controller
   template:
     metadata:
       labels:
-        {{- include "temporal-platform-operator.selectorLabels" . | nindent 8 }}
+        {{- include "temporal-platform-operator.selectorLabels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $name }}-controller
     spec:
-      serviceAccountName: {{ include "temporal-platform-operator.serviceAccountName" . }}
+      serviceAccountName: {{ include "temporal-platform-operator.fullname" $ }}-{{ $name }}
       securityContext:
         runAsNonRoot: true
         seccompProfile:
           type: RuntimeDefault
-      {{- with .Values.image.pullSecrets }}
+      {{- with $.Values.image.pullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       containers:
         - name: manager
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
           command:
             - /manager
-          env:
-            - name: TEMPORAL_FRONTEND_ADDRESS
-              value: {{ .Values.temporal.frontendAddress | quote }}
           args:
+            - --controller={{ $name }}
             - --leader-elect
             - --metrics-bind-address=:8443
             - --metrics-secure=true
             - --health-probe-bind-address=:8081
+          env:
+            - name: TEMPORAL_FRONTEND_ADDRESS
+              value: {{ $.Values.temporal.frontendAddress | quote }}
           ports:
             - name: metrics
               containerPort: 8443
@@ -64,17 +70,20 @@ spec:
               drop:
                 - ALL
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
+            {{- toYaml $.Values.resources | nindent 12 }}
       terminationGracePeriodSeconds: 10
-      {{- with .Values.nodeSelector }}
+      {{- with $.Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.affinity }}
+      {{- with $.Values.affinity }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.tolerations }}
+      {{- with $.Values.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+---
+{{- end }}
+{{- end }}

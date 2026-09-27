@@ -24,15 +24,6 @@ resources:
   controller: true
   domain: nori-cloud.io
   group: temporal
-  kind: TemporalProxy
-  path: github.com/nori-cloud/temporal-platform-operator/api/v1alpha1
-  version: v1alpha1
-- api:
-    crdVersion: v1
-    namespaced: true
-  controller: true
-  domain: nori-cloud.io
-  group: temporal
   kind: TemporalWorker
   path: github.com/nori-cloud/temporal-platform-operator/api/v1alpha1
   version: v1alpha1

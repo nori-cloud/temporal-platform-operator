@@ -1,6 +1,5 @@
 ## Append samples of your project ##
 resources:
   - temporal_v1alpha1_temporalnamespace.yaml
-  - temporal_v1alpha1_temporalproxy.yaml
   - temporal_v1alpha1_temporalworker.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples
