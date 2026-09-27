@@ -1,8 +1,9 @@
 name: E2E Tests
 
+# Automated e2e tests are deferred during the design phase. Keep this
+# workflow available for intentional manual runs without repository events.
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 permissions: {}
 
