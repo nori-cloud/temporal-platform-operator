@@ -1,0 +1,57 @@
+# Namespace in which the operator and the default proxy are installed.
+namespace: temporal
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/nori-cloud/temporal-platform-operator
+  tag: latest
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 64Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# The address of the Temporal frontend used by the default proxy.
+temporal:
+  frontendAddress: temporal-frontend.temporal.svc.cluster.local:7233
+
+proxy:
+  replicaCount: 1
+  image:
+    repository: temporalio/temporal-proxy
+    tag: v0.7.0
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 7233
+  resources:
+    limits:
+      cpu: 500m
+      memory: 256Mi
+    requests:
+      cpu: 10m
+      memory: 64Mi
+
+# Values for the OCI temporal-worker-controller dependency.
+temporal-worker-controller:
+  image:
+    tag: v1.11.0
+  rbac:
+    restrictWatchNamespaces: []
+    createEndUserRoles: false
+  certmanager:
+    install: false
+    enabled: true
+
+# The CRD-only dependency has no configurable values.
+temporal-worker-controller-crds: {}
