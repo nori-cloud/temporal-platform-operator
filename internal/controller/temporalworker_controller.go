@@ -159,6 +159,7 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 			Reason:             "WaitingForWorkerDeployment",
 			Message:            "WorkerDeployment has not reported a status yet",
 			ObservedGeneration: resource.Generation,
+			LastTransitionTime: metav1.Now(),
 		}}
 	}
 	if err := r.setStatus(ctx, resource, connection.Name, workerDeployment.Name, conditions); err != nil {
@@ -174,6 +175,7 @@ func (r *TemporalWorkerReconciler) setPending(ctx context.Context, resource *tem
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: resource.Generation,
+		LastTransitionTime: metav1.Now(),
 	}}
 	return r.setStatus(ctx, resource, "", "", conditions)
 }
