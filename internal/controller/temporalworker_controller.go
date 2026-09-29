@@ -102,10 +102,6 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}
 		return ctrl.Result{}, err
 	}
-	if !isReady(temporalNamespace.Status.Conditions) {
-		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForTemporalNamespace", "referenced TemporalNamespace is not Ready")
-	}
-
 	beforeOwnerReferences := append([]metav1.OwnerReference(nil), resource.OwnerReferences...)
 	if err := controllerutil.SetControllerReference(temporalNamespace, resource, r.Scheme); err != nil {
 		return ctrl.Result{}, err
@@ -114,6 +110,10 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		if err := r.Update(ctx, resource); err != nil {
 			return ctrl.Result{}, err
 		}
+	}
+
+	if !isReady(temporalNamespace.Status.Conditions) {
+		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForTemporalNamespace", "referenced TemporalNamespace is not Ready")
 	}
 
 	if r.FrontendAddress == "" {
@@ -140,7 +140,7 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		workerDeployment.Namespace = resource.Namespace
 		workerDeployment.Name = resource.Name
 	}
-	desiredWorkerDeployment := workerDeploymentSpec(resource, connection.Name)
+	desiredWorkerDeployment := workerDeploymentSpec(resource, connection.Name, r.FrontendAddress)
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, workerDeployment, func() error {
 		if err := controllerutil.SetControllerReference(resource, workerDeployment, r.Scheme); err != nil {
 			return err
@@ -201,20 +201,25 @@ func (r *TemporalWorkerReconciler) setStatus(ctx context.Context, resource *temp
 	return r.Status().Update(ctx, resource)
 }
 
-func workerDeploymentSpec(resource *temporalv1alpha1.TemporalWorker, connectionName string) temporaliov1alpha1.WorkerDeploymentSpec {
+func workerDeploymentSpec(resource *temporalv1alpha1.TemporalWorker, connectionName, frontendAddress string) temporaliov1alpha1.WorkerDeploymentSpec {
 	replicas := defaultWorkerReplicas
 	if resource.Spec.Replicas != nil {
 		replicas = *resource.Spec.Replicas
 	}
 	progressDeadlineSeconds := defaultProgressDeadlineSeconds
+	template := *resource.Spec.Template.DeepCopy()
+	if len(template.Spec.Containers) > 0 {
+		template.Spec.Containers[0].Env = upsertEnv(template.Spec.Containers[0].Env,
+			corev1.EnvVar{Name: "TEMPORAL_GRPC_ENDPOINT", Value: frontendAddress},
+			corev1.EnvVar{Name: "TEMPORAL_NAMESPACE", Value: resource.Spec.TemporalNamespaceRef.Name},
+		)
+	}
 	return temporaliov1alpha1.WorkerDeploymentSpec{
 		Replicas:                &replicas,
-		Template:                *resource.Spec.Template.DeepCopy(),
+		Template:                template,
 		ProgressDeadlineSeconds: &progressDeadlineSeconds,
 		RolloutStrategy: temporaliov1alpha1.RolloutStrategy{
 			Strategy: temporaliov1alpha1.UpdateProgressive,
-			// The upstream v1.11.0 API caps ramp percentages at 99, so the
-			// final step intentionally uses 99 rather than the invalid 100.
 			Steps: []temporaliov1alpha1.RolloutStep{
 				{RampPercentage: 25, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
 				{RampPercentage: 50, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
@@ -230,6 +235,24 @@ func workerDeploymentSpec(resource *temporalv1alpha1.TemporalWorker, connectionN
 			TemporalNamespace: resource.Spec.TemporalNamespaceRef.Name,
 		},
 	}
+}
+
+func upsertEnv(env []corev1.EnvVar, managed ...corev1.EnvVar) []corev1.EnvVar {
+	result := append([]corev1.EnvVar(nil), env...)
+	for _, value := range managed {
+		updated := false
+		for index := range result {
+			if result[index].Name == value.Name {
+				result[index] = value
+				updated = true
+				break
+			}
+		}
+		if !updated {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func isReady(conditions []metav1.Condition) bool {
