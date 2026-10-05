@@ -3,7 +3,6 @@
 # It should be run by config/default.
 resources:
   - bases/temporal.nori-cloud.io_temporalnamespaces.yaml
-  - bases/temporal.nori-cloud.io_temporalproxies.yaml
   - bases/temporal.nori-cloud.io_temporalworkers.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 

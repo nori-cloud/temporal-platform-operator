@@ -59,6 +59,7 @@ type TemporalNamespaceStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="has(self.metadata.name) && self.metadata.name.matches('^[a-z]([-a-z0-9]*[a-z0-9])?$') && size(self.metadata.name) <= 63",message="name must be lowercase, start with a letter, end with a letter or number, and be at most 63 characters"
 
 // TemporalNamespace is the Schema for the temporalnamespaces API
 type TemporalNamespace struct {

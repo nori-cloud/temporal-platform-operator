@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"time"
 
@@ -53,7 +54,6 @@ type TemporalWorkerReconciler struct {
 // +kubebuilder:rbac:groups=temporal.nori-cloud.io,resources=temporalworkers/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=temporal.nori-cloud.io,resources=temporalworkers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=temporal.nori-cloud.io,resources=temporalnamespaces,verbs=get;list;watch
-// +kubebuilder:rbac:groups=temporal.nori-cloud.io,resources=temporalproxies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=temporal.io,resources=connections,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=temporal.io,resources=workerdeployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=temporal.io,resources=workerdeployments/status,verbs=get
@@ -80,6 +80,9 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				return ctrl.Result{}, r.Update(ctx, resource)
 			}
 			return ctrl.Result{}, nil
+		}
+		if err := ensureControllerOwner(workerDeployment, resource); err != nil {
+			return ctrl.Result{}, err
 		}
 		if workerDeployment.DeletionTimestamp.IsZero() {
 			if err := r.Delete(ctx, workerDeployment); err != nil && !apierrors.IsNotFound(err) {
@@ -115,6 +118,9 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	if !isReady(temporalNamespace.Status.Conditions) {
 		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForTemporalNamespace", "referenced TemporalNamespace is not Ready")
 	}
+	if !temporalNamespace.DeletionTimestamp.IsZero() {
+		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForTemporalNamespace", "referenced TemporalNamespace is being deleted")
+	}
 
 	if r.FrontendAddress == "" {
 		return ctrl.Result{RequeueAfter: workerRecheckInterval}, r.setPending(ctx, resource, "WaitingForFrontend", "Temporal frontend address is not configured")
@@ -122,9 +128,16 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	connection := &temporaliov1alpha1.Connection{}
 	connection.Namespace = resource.Namespace
-	connection.Name = resource.Name + "-connection"
+	connection.Name = temporalNamespace.Name
+	if err := r.Get(ctx, client.ObjectKeyFromObject(connection), connection); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	} else if err := ensureControllerOwner(connection, temporalNamespace); err != nil {
+		return ctrl.Result{}, err
+	}
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, connection, func() error {
-		if err := controllerutil.SetControllerReference(resource, connection, r.Scheme); err != nil {
+		if err := controllerutil.SetControllerReference(temporalNamespace, connection, r.Scheme); err != nil {
 			return err
 		}
 		connection.Spec.HostPort = r.FrontendAddress
@@ -133,14 +146,18 @@ func (r *TemporalWorkerReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	if err := r.Get(ctx, workerDeploymentKey, workerDeployment); err != nil && !apierrors.IsNotFound(err) {
+	if err := r.Get(ctx, workerDeploymentKey, workerDeployment); err != nil {
+		if !apierrors.IsNotFound(err) {
+			return ctrl.Result{}, err
+		}
+	} else if err := ensureControllerOwner(workerDeployment, resource); err != nil {
 		return ctrl.Result{}, err
 	}
 	if workerDeployment.Name == "" {
 		workerDeployment.Namespace = resource.Namespace
 		workerDeployment.Name = resource.Name
 	}
-	desiredWorkerDeployment := workerDeploymentSpec(resource, connection.Name, r.FrontendAddress)
+	desiredWorkerDeployment := workerDeploymentSpec(resource, connection.Name)
 	if _, err := controllerutil.CreateOrUpdate(ctx, r.Client, workerDeployment, func() error {
 		if err := controllerutil.SetControllerReference(resource, workerDeployment, r.Scheme); err != nil {
 			return err
@@ -201,35 +218,26 @@ func (r *TemporalWorkerReconciler) setStatus(ctx context.Context, resource *temp
 	return r.Status().Update(ctx, resource)
 }
 
-func workerDeploymentSpec(resource *temporalv1alpha1.TemporalWorker, connectionName, frontendAddress string) temporaliov1alpha1.WorkerDeploymentSpec {
+func workerDeploymentSpec(resource *temporalv1alpha1.TemporalWorker, connectionName string) temporaliov1alpha1.WorkerDeploymentSpec {
 	replicas := defaultWorkerReplicas
 	if resource.Spec.Replicas != nil {
 		replicas = *resource.Spec.Replicas
 	}
 	progressDeadlineSeconds := defaultProgressDeadlineSeconds
-	template := *resource.Spec.Template.DeepCopy()
-	if len(template.Spec.Containers) > 0 {
-		template.Spec.Containers[0].Env = upsertEnv(template.Spec.Containers[0].Env,
-			corev1.EnvVar{Name: "TEMPORAL_GRPC_ENDPOINT", Value: frontendAddress},
-			corev1.EnvVar{Name: "TEMPORAL_NAMESPACE", Value: resource.Spec.TemporalNamespaceRef.Name},
-		)
+	rollout := defaultRolloutStrategy()
+	if resource.Spec.Rollout != nil {
+		rollout = *resource.Spec.Rollout.DeepCopy()
+	}
+	sunset := defaultSunsetStrategy()
+	if resource.Spec.Sunset != nil {
+		sunset = *resource.Spec.Sunset.DeepCopy()
 	}
 	return temporaliov1alpha1.WorkerDeploymentSpec{
 		Replicas:                &replicas,
-		Template:                template,
+		Template:                *resource.Spec.Template.DeepCopy(),
 		ProgressDeadlineSeconds: &progressDeadlineSeconds,
-		RolloutStrategy: temporaliov1alpha1.RolloutStrategy{
-			Strategy: temporaliov1alpha1.UpdateProgressive,
-			Steps: []temporaliov1alpha1.RolloutStep{
-				{RampPercentage: 25, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
-				{RampPercentage: 50, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
-				{RampPercentage: 99, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
-			},
-		},
-		SunsetStrategy: temporaliov1alpha1.SunsetStrategy{
-			ScaledownDelay: &metav1.Duration{Duration: time.Hour},
-			DeleteDelay:    &metav1.Duration{Duration: 24 * time.Hour},
-		},
+		RolloutStrategy:         rollout,
+		SunsetStrategy:          sunset,
 		WorkerOptions: temporaliov1alpha1.WorkerOptions{
 			ConnectionRef:     temporaliov1alpha1.ConnectionReference{Name: connectionName},
 			TemporalNamespace: resource.Spec.TemporalNamespaceRef.Name,
@@ -237,22 +245,36 @@ func workerDeploymentSpec(resource *temporalv1alpha1.TemporalWorker, connectionN
 	}
 }
 
-func upsertEnv(env []corev1.EnvVar, managed ...corev1.EnvVar) []corev1.EnvVar {
-	result := append([]corev1.EnvVar(nil), env...)
-	for _, value := range managed {
-		updated := false
-		for index := range result {
-			if result[index].Name == value.Name {
-				result[index] = value
-				updated = true
-				break
-			}
-		}
-		if !updated {
-			result = append(result, value)
-		}
+func defaultRolloutStrategy() temporaliov1alpha1.RolloutStrategy {
+	return temporaliov1alpha1.RolloutStrategy{
+		Strategy: temporaliov1alpha1.UpdateProgressive,
+		Steps: []temporaliov1alpha1.RolloutStep{
+			{RampPercentage: 25, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
+			{RampPercentage: 50, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
+			{RampPercentage: 99, PauseDuration: metav1.Duration{Duration: 30 * time.Second}},
+		},
 	}
-	return result
+}
+
+func defaultSunsetStrategy() temporaliov1alpha1.SunsetStrategy {
+	return temporaliov1alpha1.SunsetStrategy{
+		ScaledownDelay: &metav1.Duration{Duration: time.Hour},
+		DeleteDelay:    &metav1.Duration{Duration: 24 * time.Hour},
+	}
+}
+
+func ensureControllerOwner(object client.Object, owner client.Object) error {
+	controller := metav1.GetControllerOf(object)
+	if controller == nil {
+		if object.GetResourceVersion() != "" {
+			return fmt.Errorf("%s %s/%s exists without the expected controller owner", object.GetObjectKind().GroupVersionKind().Kind, object.GetNamespace(), object.GetName())
+		}
+		return nil
+	}
+	if controller.UID != owner.GetUID() {
+		return fmt.Errorf("%s %s/%s is controlled by a different resource", object.GetObjectKind().GroupVersionKind().Kind, object.GetNamespace(), object.GetName())
+	}
+	return nil
 }
 
 func isReady(conditions []metav1.Condition) bool {

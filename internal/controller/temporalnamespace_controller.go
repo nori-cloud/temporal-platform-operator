@@ -217,6 +217,24 @@ func (r *TemporalNamespaceReconciler) reconcileDeletion(ctx context.Context, res
 	if !controllerutil.ContainsFinalizer(resource, temporalFinalizer) {
 		return ctrl.Result{}, nil
 	}
+	if r.TemporalClient == nil {
+		return r.reconcilePermanentError(ctx, resource, errors.New("temporal client is not configured"))
+	}
+
+	describe, err := r.TemporalClient.WorkflowService().DescribeNamespace(ctx, &workflowservice.DescribeNamespaceRequest{Namespace: resource.Name})
+	if err != nil {
+		if isTemporalNotFound(err) {
+			controllerutil.RemoveFinalizer(resource, temporalFinalizer)
+			return ctrl.Result{}, r.Update(ctx, resource)
+		}
+		return r.reconcileTemporalError(ctx, resource, fmt.Errorf("describe Temporal namespace %q before deletion: %w", resource.Name, err))
+	}
+	if !temporalNamespaceOwnedBy(resource, describe) {
+		message := fmt.Sprintf("preserving Temporal namespace %q because it is not owned by this TemporalNamespace", resource.Name)
+		r.emitEvent(resource, corev1.EventTypeWarning, "NameAlreadyTaken", message)
+		controllerutil.RemoveFinalizer(resource, temporalFinalizer)
+		return ctrl.Result{}, r.Update(ctx, resource)
+	}
 
 	workers, err := r.workersReferencingNamespace(ctx, resource.Name)
 	if err != nil {
@@ -240,8 +258,21 @@ func (r *TemporalNamespaceReconciler) reconcileDeletion(ctx context.Context, res
 	if len(workers.Items) != 0 {
 		return ctrl.Result{RequeueAfter: workersRecheckInterval}, nil
 	}
-	if r.TemporalClient == nil {
-		return r.reconcilePermanentError(ctx, resource, errors.New("temporal client is not configured"))
+	// Check ownership again immediately before the destructive call. Temporal
+	// metadata is mutable outside Kubernetes, so the initial check is not enough.
+	describe, err = r.TemporalClient.WorkflowService().DescribeNamespace(ctx, &workflowservice.DescribeNamespaceRequest{Namespace: resource.Name})
+	if err != nil {
+		if isTemporalNotFound(err) {
+			controllerutil.RemoveFinalizer(resource, temporalFinalizer)
+			return ctrl.Result{}, r.Update(ctx, resource)
+		}
+		return r.reconcileTemporalError(ctx, resource, fmt.Errorf("final ownership check for Temporal namespace %q: %w", resource.Name, err))
+	}
+	if !temporalNamespaceOwnedBy(resource, describe) {
+		message := fmt.Sprintf("preserving Temporal namespace %q because ownership changed", resource.Name)
+		r.emitEvent(resource, corev1.EventTypeWarning, "NameAlreadyTaken", message)
+		controllerutil.RemoveFinalizer(resource, temporalFinalizer)
+		return ctrl.Result{}, r.Update(ctx, resource)
 	}
 
 	_, err = r.TemporalClient.OperatorService().DeleteNamespace(ctx, &operatorservice.DeleteNamespaceRequest{Namespace: resource.Name})

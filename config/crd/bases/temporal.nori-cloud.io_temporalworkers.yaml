@@ -46,6 +46,175 @@ spec:
                 format: int32
                 minimum: 1
                 type: integer
+              rollout:
+                description: |-
+                  Rollout configures how the upstream Worker Controller routes new workflow
+                  executions to a new worker version. When omitted, the operator uses its
+                  default progressive rollout.
+                properties:
+                  gate:
+                    description: |-
+                      Gate specifies a workflow type that must run once to completion on the new worker deployment version before
+                      any traffic is directed to the new version.
+                    properties:
+                      encoding:
+                        description: |-
+                          Encoding is the encoding type of the gate input. If unset, then the controller will use json/plain encoding.
+                          The binary encoding types require a byte-valued input source instead of inline input.
+                        enum:
+                        - binary/plain
+                        - json/plain
+                        - json/protobuf
+                        - binary/protobuf
+                        type: string
+                      input:
+                        description: |-
+                          Input is an arbitrary JSON object passed as the first parameter to the gate workflow.
+                          For inputs with secrets use SecretKeyRef in InputFrom to omit from logs.
+                        x-kubernetes-preserve-unknown-fields: true
+                      inputFrom:
+                        description: |-
+                          InputFrom references a key in a ConfigMap or Secret whose contents are passed
+                          as the first parameter to the gate workflow. The referenced value should be a JSON document.
+                          For inputs with secrets use SecretKeyRef to omit from logs.
+                        properties:
+                          configMapKeyRef:
+                            description: Select a key of a ConfigMap in the same namespace
+                            properties:
+                              key:
+                                description: The key to select.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the ConfigMap or its
+                                  key must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                          secretKeyRef:
+                            description: Select a key of a Secret in the same namespace
+                            properties:
+                              key:
+                                description: The key of the secret to select from.  Must
+                                  be a valid secret key.
+                                type: string
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                              optional:
+                                description: Specify whether the Secret or its key
+                                  must be defined
+                                type: boolean
+                            required:
+                            - key
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        type: object
+                      messageType:
+                        description: |-
+                          MessageType is the fully-qualified protobuf message name of the gate input, for example
+                          "my.package.DeployRequest". Workers resolve the message type from the gate workflow's own
+                          signature, so this is recorded for tools that only see the payload, such as the Temporal UI.
+                          Required when Encoding is binary/protobuf, optional for json/protobuf, rejected otherwise.
+                        type: string
+                      workflowType:
+                        type: string
+                    required:
+                    - workflowType
+                    type: object
+                  steps:
+                    description: Steps to execute progressive rollouts. Only required
+                      when strategy is "Progressive".
+                    items:
+                      properties:
+                        pauseDuration:
+                          description: PauseDuration indicates how long to pause before
+                            progressing to the next step.
+                          type: string
+                        rampPercentage:
+                          description: |-
+                            RampPercentage indicates what percentage of new workflow executions should be
+                            routed to the new worker deployment version while this step is active.
+                            For example, 15 means 15%.
+
+                            Acceptable range is [1,99] (1% to 99%).
+                          maximum: 99
+                          minimum: 1
+                          type: integer
+                      required:
+                      - pauseDuration
+                      - rampPercentage
+                      type: object
+                      x-kubernetes-validations:
+                      - message: pause duration must be at least 30s
+                        rule: duration(self.pauseDuration) >= duration('30s')
+                    maxItems: 20
+                    type: array
+                  strategy:
+                    description: |-
+                      Specifies how to treat concurrent executions of a Job.
+                      Valid values are:
+                      - "Manual"
+                      - "AllAtOnce"
+                      - "Progressive"
+                    enum:
+                    - Manual
+                    - AllAtOnce
+                    - Progressive
+                    type: string
+                required:
+                - strategy
+                type: object
+                x-kubernetes-validations:
+                - message: steps are required for Progressive rollout
+                  rule: self.strategy != 'Progressive' || (has(self.steps) && size(self.steps)
+                    > 0)
+                - message: exactly one of configMapKeyRef or secretKeyRef must be
+                    set
+                  rule: '!has(self.gate) || !has(self.gate.inputFrom) || (has(self.gate.inputFrom.configMapKeyRef)
+                    != has(self.gate.inputFrom.secretKeyRef))'
+                - message: gate.messageType is required when gate.encoding is binary/protobuf
+                  rule: '!has(self.gate) || !has(self.gate.encoding) || self.gate.encoding
+                    != ''binary/protobuf'' || has(self.gate.messageType)'
+                - message: gate.messageType may only be set when gate.encoding is
+                    json/protobuf or binary/protobuf
+                  rule: '!has(self.gate) || !has(self.gate.messageType) || (has(self.gate.encoding)
+                    && (self.gate.encoding == ''json/protobuf'' || self.gate.encoding
+                    == ''binary/protobuf''))'
+              sunset:
+                description: |-
+                  Sunset configures how the upstream Worker Controller cleans up drained
+                  worker versions. When omitted, the upstream defaults are used.
+                properties:
+                  deleteDelay:
+                    default: 24h
+                    description: |-
+                      DeleteDelay specifies how long to wait after a version is drained before deleting its Deployment.
+                      Defaults to 24 hours.
+                    type: string
+                  scaledownDelay:
+                    default: 1h
+                    description: |-
+                      ScaledownDelay specifies how long to wait after a version is drained before scaling its Deployment to zero.
+                      Defaults to 1 hour.
+                    type: string
+                type: object
               template:
                 description: Template describes the worker pod template.
                 properties:
@@ -8651,6 +8820,11 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: name must be lowercase, start with a letter, end with a letter
+            or number, and be at most 63 characters
+          rule: has(self.metadata.name) && self.metadata.name.matches('^[a-z]([-a-z0-9]*[a-z0-9])?$')
+            && size(self.metadata.name) <= 63
     served: true
     storage: true
     subresources:

@@ -20,6 +20,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+
+	temporaliov1alpha1 "github.com/temporalio/temporal-worker-controller/api/v1alpha1"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -42,6 +44,17 @@ type TemporalWorkerSpec struct {
 	// +kubebuilder:default=1
 	// +optional
 	Replicas *int32 `json:"replicas,omitempty"`
+
+	// Rollout configures how the upstream Worker Controller routes new workflow
+	// executions to a new worker version. When omitted, the operator uses its
+	// default progressive rollout.
+	// +optional
+	Rollout *temporaliov1alpha1.RolloutStrategy `json:"rollout,omitempty"`
+
+	// Sunset configures how the upstream Worker Controller cleans up drained
+	// worker versions. When omitted, the upstream defaults are used.
+	// +optional
+	Sunset *temporaliov1alpha1.SunsetStrategy `json:"sunset,omitempty"`
 }
 
 // TemporalWorkerStatus defines the observed state of TemporalWorker.
@@ -67,6 +80,7 @@ type TemporalWorkerStatus struct {
 
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="has(self.metadata.name) && self.metadata.name.matches('^[a-z]([-a-z0-9]*[a-z0-9])?$') && size(self.metadata.name) <= 63",message="name must be lowercase, start with a letter, end with a letter or number, and be at most 63 characters"
 
 // TemporalWorker is the Schema for the temporalworkers API
 type TemporalWorker struct {

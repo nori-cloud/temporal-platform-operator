@@ -21,6 +21,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	apiv1alpha1 "github.com/temporalio/temporal-worker-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -190,6 +191,16 @@ func (in *TemporalWorkerSpec) DeepCopyInto(out *TemporalWorkerSpec) {
 		in, out := &in.Replicas, &out.Replicas
 		*out = new(int32)
 		**out = **in
+	}
+	if in.Rollout != nil {
+		in, out := &in.Rollout, &out.Rollout
+		*out = new(apiv1alpha1.RolloutStrategy)
+		(*in).DeepCopyInto(*out)
+	}
+	if in.Sunset != nil {
+		in, out := &in.Sunset, &out.Sunset
+		*out = new(apiv1alpha1.SunsetStrategy)
+		(*in).DeepCopyInto(*out)
 	}
 }
 
